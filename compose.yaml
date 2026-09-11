@@ -1,0 +1,12 @@
+services:
+  sgwatcher:
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    init: true
+    volumes:
+      - sgwatcher-data:/app/data
+
+volumes:
+  sgwatcher-data:

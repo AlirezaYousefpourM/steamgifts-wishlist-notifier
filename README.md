@@ -36,4 +36,26 @@ Run continuously:
 .venv/bin/python main.py
 ```
 
+## Docker
+
+Build and start it in the background:
+
+```bash
+docker compose up -d --build
+```
+
+Follow its logs:
+
+```bash
+docker compose logs -f
+```
+
+Stop it:
+
+```bash
+docker compose down
+```
+
+The `.env` file is passed to the container at runtime, and application data is kept in the `sgwatcher-data` Docker volume.
+
 Keep `.env`, `data/state.sqlite3`, and `data/steamgifts.cookies` private.
