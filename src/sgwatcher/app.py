@@ -199,3 +199,82 @@ class Application:
             seconds = max(1, min(25, int((next_poll - datetime.now(self.config.timezone)).total_seconds())))
             self.process_updates(seconds)
             self.flush()
+
+
+class MultiApplication:
+    def __init__(self, applications: list[Application]):
+        if not applications:
+            raise ValueError("At least one application is required")
+        self.applications = applications
+        first = applications[0]
+        self.telegram = TelegramClient(first.config.telegram_bot_token, 0, 0, first.config.http_timeout_seconds)
+        self.offset_state = first.state
+        self.running = True
+
+    def stop(self, *_: object) -> None:
+        self.running = False
+
+    def process_updates(self, timeout: int) -> None:
+        offset = int(self.offset_state.get("telegram_offset") or "0")
+        try:
+            updates = self.telegram.updates(offset, timeout)
+        except TelegramError as exc:
+            for application in self.applications:
+                application.error(exc, "Telegram update polling")
+            return
+        for update in updates:
+            update_id = update.get("update_id")
+            if isinstance(update_id, int):
+                self.offset_state.set("telegram_offset", str(update_id + 1))
+            callback = self.telegram.callback(update)
+            if callback is None:
+                continue
+            authorized = [item for item in self.applications if item.telegram.authorized(callback)]
+            application = authorized[0] if len(authorized) == 1 else None
+            if application is None:
+                try:
+                    self.telegram.answer(callback.query_id, "Unknown or expired user", alert=True)
+                except TelegramError:
+                    pass
+                continue
+            try:
+                application.handle_entry(callback)
+            except Exception as exc:
+                application.error(exc, "Telegram callback processing")
+
+    def run(self) -> None:
+        signal.signal(signal.SIGINT, self.stop)
+        signal.signal(signal.SIGTERM, self.stop)
+        for application in self.applications:
+            application.queue("started", "SteamGifts wishlist assistant started.")
+            application.flush()
+        next_polls = {
+            application.config.telegram_user_id: datetime.now(application.config.timezone)
+            for application in self.applications
+        }
+        while self.running:
+            for application in self.applications:
+                config = application.config
+                now = datetime.now(config.timezone)
+                if now < next_polls[config.telegram_user_id]:
+                    continue
+                if in_quiet_hours(now.time(), config.quiet_start, config.quiet_end):
+                    next_polls[config.telegram_user_id] = next_quiet_end(now, config.quiet_start, config.quiet_end)
+                else:
+                    application.run_once()
+                    next_polls[config.telegram_user_id] = now + application.next_interval()
+            seconds = max(
+                1,
+                min(
+                    25,
+                    int(
+                        min(
+                            (next_polls[item.config.telegram_user_id] - datetime.now(item.config.timezone)).total_seconds()
+                            for item in self.applications
+                        )
+                    ),
+                ),
+            )
+            self.process_updates(seconds)
+            for application in self.applications:
+                application.flush()

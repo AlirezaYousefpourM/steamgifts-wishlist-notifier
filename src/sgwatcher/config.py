@@ -85,7 +85,58 @@ class Config:
     def from_env(cls, env_path: str | Path = ".env", environ: dict[str, str] | None = None) -> Config:
         source = load_env_file(Path(env_path))
         source.update(dict(os.environ if environ is None else environ))
+        return cls.from_source(source)
 
+    @classmethod
+    def all_from_env(
+        cls, env_path: str | Path = ".env", environ: dict[str, str] | None = None
+    ) -> tuple[Config, ...]:
+        source = load_env_file(Path(env_path))
+        source.update(dict(os.environ if environ is None else environ))
+        raw_users = source.get("USERS", "").strip()
+        if not raw_users:
+            return (cls.from_source(source),)
+        records = [record.strip() for record in raw_users.split(";") if record.strip()]
+        if not records:
+            raise ConfigError("USERS does not contain any users")
+        configs: list[Config] = []
+        chat_ids: set[int] = set()
+        user_ids: set[int] = set()
+        for slot, record in enumerate(records, 1):
+            fields = [field.strip() for field in record.split(",")]
+            if len(fields) != 3:
+                raise ConfigError(f"USERS entry {slot} must contain PHPSESSID,CHAT_ID,USER_ID")
+            session_id, chat_id, user_id = fields
+            if session_id.startswith("PHPSESSID="):
+                session_id = session_id.split("=", 1)[1]
+            if not session_id or any(character in session_id for character in ";, \t\r\n"):
+                raise ConfigError(f"USERS entry {slot} has an invalid PHPSESSID")
+            try:
+                parsed_chat_id = int(chat_id)
+                parsed_user_id = int(user_id)
+            except ValueError as exc:
+                raise ConfigError(f"USERS entry {slot} has an invalid CHAT_ID or USER_ID") from exc
+            if parsed_chat_id <= 0 or parsed_user_id <= 0:
+                raise ConfigError(f"USERS entry {slot} requires positive CHAT_ID and USER_ID values")
+            if parsed_chat_id in chat_ids or parsed_user_id in user_ids:
+                raise ConfigError(f"USERS entry {slot} duplicates a Telegram CHAT_ID or USER_ID")
+            chat_ids.add(parsed_chat_id)
+            user_ids.add(parsed_user_id)
+            user_source = dict(source)
+            user_source.update(
+                {
+                    "SG_COOKIE": f"PHPSESSID={session_id}",
+                    "TELEGRAM_CHAT_ID": chat_id,
+                    "TELEGRAM_USER_ID": user_id,
+                    "STATE_PATH": f"data/users/{parsed_user_id}/state.sqlite3",
+                    "COOKIE_JAR_PATH": f"data/users/{parsed_user_id}/steamgifts.cookies",
+                }
+            )
+            configs.append(cls.from_source(user_source))
+        return tuple(configs)
+
+    @classmethod
+    def from_source(cls, source: dict[str, str]) -> Config:
         def required(name: str) -> str:
             value = source.get(name, "").strip()
             if not value:
@@ -165,4 +216,3 @@ class Config:
                 f"Cookie jar: {self.cookie_jar_path}",
             ]
         )
-

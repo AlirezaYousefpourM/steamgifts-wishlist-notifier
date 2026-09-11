@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from .app import Application
+from .app import Application, MultiApplication
 from .config import Config, ConfigError, load_env_file
 from .state import State
 from .steamgifts import SteamGiftsClient, SteamGiftsError
@@ -48,34 +48,45 @@ def main(argv: list[str] | None = None) -> int:
             print(f"TELEGRAM_USER_ID={user_id} TELEGRAM_CHAT_ID={chat_id} CHAT_TYPE={chat_type}")
         return 0
     try:
-        config = Config.from_env(args.env_file)
+        configs = Config.all_from_env(args.env_file)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
     if args.check_config:
-        print(config.redacted_summary())
+        print("\n\n".join(config.redacted_summary() for config in configs))
         return 0
-    state = State(config.state_path)
+    states: list[State] = []
     try:
-        steamgifts = SteamGiftsClient(
-            config.sg_cookie,
-            config.cookie_jar_path,
-            config.http_timeout_seconds,
-            config.user_agent,
-        )
-        telegram = TelegramClient(
-            config.telegram_bot_token,
-            config.telegram_chat_id,
-            config.telegram_user_id,
-            config.http_timeout_seconds,
-        )
-        application = Application(config, state, steamgifts, telegram)
-        application.run_once() if args.once else application.run()
+        applications: list[Application] = []
+        for config in configs:
+            state = State(config.state_path)
+            states.append(state)
+            steamgifts = SteamGiftsClient(
+                config.sg_cookie,
+                config.cookie_jar_path,
+                config.http_timeout_seconds,
+                config.user_agent,
+            )
+            telegram = TelegramClient(
+                config.telegram_bot_token,
+                config.telegram_chat_id,
+                config.telegram_user_id,
+                config.http_timeout_seconds,
+            )
+            applications.append(Application(config, state, steamgifts, telegram))
+        if args.once:
+            for application in applications:
+                application.run_once()
+        elif len(applications) == 1:
+            applications[0].run()
+        else:
+            MultiApplication(applications).run()
     except SteamGiftsError as exc:
         logging.error("Startup failed: %s", exc)
         return 1
     finally:
-        state.close()
+        for state in states:
+            state.close()
     return 0
 
 

@@ -91,11 +91,14 @@ class TelegramClient:
         chat = message.get("chat") or {}
         sender = query.get("from") or {}
         try:
+            code = data.split(":", 1)[1]
+            if not code:
+                return None
             return EntryCallback(
                 query_id=str(query["id"]),
                 user_id=int(sender["id"]),
                 chat_id=int(chat["id"]) if "id" in chat else None,
-                code=data.split(":", 1)[1],
+                code=code,
             )
         except (KeyError, TypeError, ValueError):
             return None
